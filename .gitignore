@@ -1,6 +1,8 @@
 # Created by https://www.toptal.com/developers/gitignore/api/jetbrains,clion,pycharm,c++,python
 # Edit at https://www.toptal.com/developers/gitignore?templates=jetbrains,clion,pycharm,c++,python
 
+*.zip
+
 ### C++ ###
 # Prerequisites
 *.d
