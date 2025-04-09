@@ -1,36 +1,60 @@
 import math
 import os
 import pickle
-import re
 from collections import Counter, defaultdict
-
-
-def tokenize(text):
-    """Tokenize text into words."""
-    return re.findall(r'\w+', text.lower())
-
-
-def get_ngrams(tokens, n):
-    """Generate n-grams from tokens with start/end markers."""
-    padded = ["<s>"] * (n - 1) + tokens + ["</s>"]
-    return [tuple(padded[i:i + n]) for i in range(len(padded) - n + 1)]
-
+from nltk.tokenize import word_tokenize
+from nltk.util import ngrams
 
 class NGramModel:
+    """Base class for n-gram language models"""
+
     def __init__(self, n):
         self.n = n
         self.ngram_counts = defaultdict(Counter)
         self.vocabulary = set()
 
+    def tokenize(self, text):
+        """Tokenize text using NLTK"""
+        return [token.lower() for token in word_tokenize(text)]
+
+    def train_from_files(self, folder_path):
+        """Incrementally train model from multiple files"""
+        if not os.path.exists(folder_path):
+            raise FileNotFoundError(f"Folder '{folder_path}' not found")
+
+        file_count = 0
+        for filename in os.listdir(folder_path):
+            file_path = os.path.join(folder_path, filename)
+            if os.path.isfile(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    print(f"Processing {filename}...")
+                    file_content = f.read()
+                    self.train(file_content)
+                    file_count += 1
+
+        if file_count == 0:
+            raise ValueError(f"No files found in '{folder_path}' folder")
+
+        print(f"Successfully processed {file_count} files.")
+        return file_count
+
     def train(self, corpus):
-        tokens = tokenize(corpus)
-        self.vocabulary = set(tokens) | {"<s>", "</s>"}
+        """Train model on text corpus"""
+        tokens = self.tokenize(corpus)
+        self.vocabulary.update(tokens)
+        self.vocabulary.update(["<s>", "</s>"])
 
         # Count n-grams for all orders up to n
         for i in range(1, self.n + 1):
-            ngrams = get_ngrams(tokens, i)
-            for ngram in ngrams:
-                self.ngram_counts[i][ngram] += 1
+            padded = ["<s>"] * (i - 1) + tokens + ["</s>"]
+            text_ngrams = list(ngrams(padded, i))
+            self.ngram_counts[i].update(text_ngrams)
+
+        self.finalize_training()
+
+    def finalize_training(self):
+        """Hook for derived classes to perform post-training calculations"""
+        pass
 
     def save(self, filename):
         with open(filename, 'wb') as f:
@@ -42,17 +66,18 @@ class NGramModel:
             return pickle.load(f)
 
     def perplexity(self, corpus):
-        tokens = tokenize(corpus)
+        tokens = self.tokenize(corpus)
         log_prob_sum = 0
-        ngrams = get_ngrams(tokens, self.n)
+        padded = ["<s>"] * (self.n - 1) + tokens + ["</s>"]
+        text_ngrams = list(ngrams(padded, self.n))
 
-        for ngram in ngrams:
+        for ngram in text_ngrams:
             context, token = ngram[:-1], ngram[-1]
             prob = self.probability(token, context)
             if prob > 0:
                 log_prob_sum += math.log2(prob)
 
-        return 2 ** (-log_prob_sum / len(ngrams))
+        return 2 ** (-log_prob_sum / len(text_ngrams))
 
     def probability(self, token, context):
         raise NotImplementedError
@@ -64,15 +89,15 @@ class GoodTuringModel(NGramModel):
         self.max_count = max_count
         self.count_of_counts = defaultdict(int)
 
-    def train(self, corpus):
-        super().train(corpus)
-
-        # Calculate count-of-counts
+    def finalize_training(self):
+        """Calculate count-of-counts for Good-Turing estimation"""
+        self.count_of_counts.clear()
         for count in self.ngram_counts[self.n].values():
             if count <= self.max_count + 1:
                 self.count_of_counts[count] += 1
 
     def good_turing_estimate(self, count):
+        """Apply Good-Turing smoothing to a count"""
         if count == 0:
             # Zero count smoothing
             return self.count_of_counts[1] / sum(self.ngram_counts[self.n].values())
@@ -99,27 +124,29 @@ class KneserNeyModel(NGramModel):
     def __init__(self, n, discount=0.75):
         super().__init__(n)
         self.discount = discount
-        # For Kneser-Ney continuation counting
         self.continuation_counts = defaultdict(int)
         self.context_types = defaultdict(set)
+        self.following_words = defaultdict(set)
 
-    def train(self, corpus):
-        super().train(corpus)
+    def finalize_training(self):
+        """Calculate continuation counts for Kneser-Ney smoothing"""
+        self.context_types.clear()
+        self.continuation_counts.clear()
+        self.following_words.clear()
 
-        # Calculate continuation counts for KN
         for ngram in self.ngram_counts[self.n]:
             if self.n > 1:
                 context = ngram[:-1]
                 word = ngram[-1]
                 self.context_types[word].add(context)
+                self.following_words[context].add(word)
 
-        # Count number of different contexts word appears in
         for word in self.context_types:
             self.continuation_counts[word] = len(self.context_types[word])
 
     def probability(self, token, context):
         if self.n == 1:
-            # Unigram case - use MLE with smoothing
+            # Unigram case
             count = self.ngram_counts[1].get((token,), 0)
             total = sum(self.ngram_counts[1].values())
             return max(count - self.discount, 0) / total + \
@@ -138,74 +165,55 @@ class KneserNeyModel(NGramModel):
                 return self.probability(token, ())
 
         # Count of unique words following this context
-        following_types = len([1 for ng in self.ngram_counts[self.n]
-                               if ng[:-1] == context])
+        following_types = len(self.following_words[context])
 
         # Calculate lambda (normalization factor)
         lambda_factor = (self.discount * following_types) / context_count
 
         # Get lower-order probability (recursively)
-        lower_prob = self.probability(token, context[1:]) if len(context) > 1 else \
-            self.continuation_counts[token] / sum(self.continuation_counts.values())
+        if len(context) > 1:
+            lower_prob = self.probability(token, context[1:])
+        else:
+            continuation_sum = sum(self.continuation_counts.values())
+            lower_prob = self.continuation_counts[token] / continuation_sum if continuation_sum else 0
 
         return max(count - self.discount, 0) / context_count + lambda_factor * lower_prob
 
 
-if __name__ == '__main__':
-    # Load training corpus from multiple files in the korpus folder
-    corpus = ""
-    korpus_folder = "korpus"
+def main():
+    corpus_folder = "korpus"
+    if not os.path.exists(corpus_folder):
+        print(f"Error: Folder '{corpus_folder}' not found!")
+        return
 
-    if not os.path.exists(korpus_folder):
-        print(f"Error: Folder '{korpus_folder}' not found!")
-        exit(1)
-
-    file_count = 0
-    for filename in os.listdir(korpus_folder):
-        file_path = os.path.join(korpus_folder, filename)
-        if os.path.isfile(file_path):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                    corpus += file_content + " "  # Add space between files
-                    file_count += 1
-            except Exception as e:
-                print(f"Error reading file {file_path}: {e}")
-
-    if file_count == 0:
-        print(f"No files found in '{korpus_folder}' folder!")
-        exit(1)
-
-    print(f"Successfully loaded {file_count} files from '{korpus_folder}' folder.")
-
-    # Train models
     print("Training models...")
-    # Good-Turing models
-    bigram_gt = GoodTuringModel(2)
-    bigram_gt.train(corpus)
-    bigram_gt.save('bigram_gt.model')
 
-    trigram_gt = GoodTuringModel(3)
-    trigram_gt.train(corpus)
-    trigram_gt.save('trigram_gt.model')
+    # Initialize models
+    models = {
+        "Bigram GT": GoodTuringModel(2),
+        "Trigram GT": GoodTuringModel(3),
+        "Bigram KN": KneserNeyModel(2),
+        "Trigram KN": KneserNeyModel(3)
+    }
 
-    # Kneser-Ney models
-    bigram_kn = KneserNeyModel(2)
-    bigram_kn.train(corpus)
-    bigram_kn.save('bigram_kn.model')
+    # Get sample text for evaluation
+    sample_text = ""
+    sample_file = os.path.join(corpus_folder, os.listdir(corpus_folder)[0])
+    with open(sample_file, 'r', encoding='utf-8') as f:
+        sample_text = f.read()
 
-    trigram_kn = KneserNeyModel(3)
-    trigram_kn.train(corpus)
-    trigram_kn.save('trigram_kn.model')
+    # Train and evaluate each model
+    for name, model in models.items():
+        print(f"Training {name}...")
+        model.train_from_files(corpus_folder)
+        model.save(f"{name.lower().replace(' ', '_')}.model")
+        print(f"{name} perplexity: {model.perplexity(sample_text):.2f}")
 
-    # Calculate perplexity
-    print("\nPerplexity on training corpus:")
-    print(f"Bigram Good-Turing: {bigram_gt.perplexity(corpus):.2f}")
-    print(f"Trigram Good-Turing: {trigram_gt.perplexity(corpus):.2f}")
-    print(f"Bigram Kneser-Ney: {bigram_kn.perplexity(corpus):.2f}")
-    print(f"Trigram Kneser-Ney: {trigram_kn.perplexity(corpus):.2f}")
+    # Test loading
+    print("\nTesting model loading...")
+    loaded_model = KneserNeyModel.load("trigram_kn.model")
+    print(f"Loaded model perplexity: {loaded_model.perplexity(sample_text):.2f}")
 
-    # Demonstrate loading from file
-    print("\nLoading model from file and calculating perplexity...")
-    loaded_model = KneserNeyModel.load('trigram_kn.model')
-    print(f"Loaded Trigram KN perplexity: {loaded_model.perplexity(corpus):.2f}")
+
+if __name__ == "__main__":
+    main()
