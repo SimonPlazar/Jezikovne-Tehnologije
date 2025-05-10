@@ -4,6 +4,58 @@ import os
 import re
 
 
+def split_corpus_from_file(file_path, chunk_size=100000):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        current_chunk = []
+        current_size = 0
+
+        for line in f:
+            line_size = len(line)
+
+            if current_size + line_size > chunk_size and current_chunk:
+                yield ''.join(current_chunk)
+                current_chunk = []
+                current_size = 0
+
+            # Add line to current chunk
+            current_chunk.append(line)
+            current_size += line_size
+
+        # Yield the last chunk if there is one
+        if current_chunk:
+            yield ''.join(current_chunk)
+
+
+def train_with_large_corpus(corpus_file, max_ngrams=300, min_n=1, max_n=5, chunk_size=100000):
+    # Initialize a counter for all n-grams
+    all_ngram_counts = Counter()
+
+    # Process the corpus in chunks
+    for chunk in split_corpus_from_file(corpus_file, chunk_size):
+        # For each chunk, extract tokens and generate n-grams
+        tokens = re.findall(r"[a-zA-Z']+", chunk.lower())
+
+        for token in tokens:
+            for n in range(min_n, max_n + 1):
+                # Handle unigrams specially
+                if n == 1:
+                    for char in token:
+                        all_ngram_counts[char] += 1
+                    continue
+
+                # Normal n-gram processing with padding
+                padded_token = '_' + token + '_' * (n - 1)
+                for i in range(len(padded_token) - n + 1):
+                    ngram = padded_token[i:i + n]
+                    all_ngram_counts[ngram] += 1
+
+    # Get the final profile
+    most_common = all_ngram_counts.most_common(max_ngrams)
+    profile = [ngram for ngram, _ in most_common]
+
+    return profile
+
+
 def create_profile(text, max_ngrams=300, min_n=1, max_n=5):
     # Tokenize
     tokens = re.findall(r"[a-zA-Z']+", text.lower())
@@ -81,14 +133,14 @@ if __name__ == "__main__":
 
     # Train command - create profile for a specific language
     train_parser = subparsers.add_parser('train', help='Create a language profile')
-    train_parser.add_argument('language', help='Language name (e.g., english, slovenian)')
+    train_parser.add_argument('language', help='Language name (e.g., english, slovenian...)')
     train_parser.add_argument('--corpus', required=True, help='Path to corpus file')
-    train_parser.add_argument('--output', required=True, help='Path to save the profile')
+    train_parser.add_argument('--output', required=True, help='Path to directory to save profiles')
 
     # Classify command - detect language of a document
     classify_parser = subparsers.add_parser('classify', help='Classify a document')
     classify_parser.add_argument('--text', required=True, help='Path to text file to classify')
-    classify_parser.add_argument('--profiles', required=True, help='Path to directory with profiles')
+    classify_parser.add_argument('--profiles', required=True, help='Path to directory with saved profiles')
 
     args = parser.parse_args()
 
@@ -97,19 +149,22 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
         try:
-            with open(args.corpus, 'r', encoding='utf-8') as f:
-                text = f.read()
+            # with open(args.corpus, 'r', encoding='utf-8') as f:
+            #     text = f.read()
+            # profile = create_profile(text)
 
-            profile = create_profile(text)
-
-            with open(args.output, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(profile))
+            profile = train_with_large_corpus(args.corpus)
 
             print(f"Created profile for {args.language} with {len(profile)} n-grams")
+
+            profile_path = os.path.join(args.output, f"{args.language}_profile.txt")
+            with open(profile_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(profile))
+
             print(f"Profile saved to {args.output}")
 
         except FileNotFoundError:
-            print(f"Corpus file not found: {args.corpus}")
+            print(f"File not found")
 
     elif args.command == 'classify':
         # Classification mode
@@ -147,5 +202,5 @@ if __name__ == "__main__":
 
 
 # corpus
-# https://www.corpusdata.org/formats.asp English&Spanish
+# https://wortschatz.uni-leipzig.de/en/download/German
 
