@@ -33,7 +33,8 @@ def train_with_large_corpus(corpus_file, max_ngrams=300, min_n=1, max_n=5, chunk
     # Process the corpus in chunks
     for chunk in split_corpus_from_file(corpus_file, chunk_size):
         # For each chunk, extract tokens and generate n-grams
-        tokens = re.findall(r"[a-zA-Z']+", chunk.lower())
+        # tokens = re.findall(r"[a-zA-Z']+", chunk.lower())
+        tokens = re.findall(r"[^\W\d_]+", chunk.lower())
 
         for token in tokens:
             for n in range(min_n, max_n + 1):
@@ -58,7 +59,8 @@ def train_with_large_corpus(corpus_file, max_ngrams=300, min_n=1, max_n=5, chunk
 
 def create_profile(text, max_ngrams=300, min_n=1, max_n=5):
     # Tokenize
-    tokens = re.findall(r"[a-zA-Z']+", text.lower())
+    # tokens = re.findall(r"[a-zA-Z']+", text.lower())
+    tokens = re.findall(r"[^\W\d_]+", text.lower()) # Only keep alphabetic characters
 
     # Generate n-grams from tokens with proper padding
     all_ngrams = []
@@ -127,7 +129,47 @@ def classify_document(text, profiles):
     return detected_lang, distances
 
 
+def classify_test_files(profiles_dir='Profiles', test_files_dir='test_files'):
+    # Load all profiles
+    profiles = {}
+    for filename in os.listdir(profiles_dir):
+        if filename.endswith('_profile.txt'):
+            lang = filename.replace('_profile.txt', '')
+            profile_path = os.path.join(profiles_dir, filename)
+            with open(profile_path, 'r', encoding='utf-8') as f:
+                profiles[lang] = f.read().splitlines()
+
+    if not profiles:
+        print(f"No profiles found in {profiles_dir}")
+        return
+
+    if not os.path.exists(test_files_dir):
+        print(f"Test files directory {test_files_dir} does not exist.")
+        return
+
+    # Process each file in the test directory
+    for filename in os.listdir(test_files_dir):
+        file_path = os.path.join(test_files_dir, filename)
+        if os.path.isfile(file_path):
+            try:
+                # Read the document
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    doc_text = f.read()
+
+                # Classify the document
+                detected_lang, _ = classify_document(doc_text, profiles)
+
+                # Output result
+                print(f"{filename} - {detected_lang}")
+
+            except Exception as e:
+                print(f"{filename} - Error: {e}")
+
+
 if __name__ == "__main__":
+    # classify_test_files()
+    # exit(0)
+
     parser = argparse.ArgumentParser(description='N-gram based language detection')
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
@@ -136,6 +178,7 @@ if __name__ == "__main__":
     train_parser.add_argument('language', help='Language name (e.g., english, slovenian...)')
     train_parser.add_argument('--corpus', required=True, help='Path to corpus file')
     train_parser.add_argument('--output', required=True, help='Path to directory to save profiles')
+    train_parser.add_argument('--max_ngrams', type=int, default=300, help='Maximum number of n-grams to keep')
 
     # Classify command - detect language of a document
     classify_parser = subparsers.add_parser('classify', help='Classify a document')
@@ -153,7 +196,7 @@ if __name__ == "__main__":
             #     text = f.read()
             # profile = create_profile(text)
 
-            profile = train_with_large_corpus(args.corpus)
+            profile = train_with_large_corpus(args.corpus, args.max_ngrams)
 
             print(f"Created profile for {args.language} with {len(profile)} n-grams")
 
