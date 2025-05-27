@@ -5,10 +5,17 @@ import random
 from collections import Counter, defaultdict
 from nltk.tokenize import word_tokenize
 from nltk.util import ngrams
+import re
+import argparse
 
 
 def tokenize_text(text):
-    return [token.lower() for token in word_tokenize(text)]
+    # return [token.lower() for token in word_tokenize(text)]
+    return [
+        token.lower()
+        for token in word_tokenize(text)
+        if re.fullmatch(r"[^\W\d_]+", token.lower())
+    ]
 
 
 def get_ngrams_from_tokens(tokens, n):
@@ -23,7 +30,7 @@ def process_corpus(folder_path):
     all_tokens = []
     file_count = 0
 
-    for filename in os.listdir(folder_path)[:20]:
+    for filename in os.listdir(folder_path)[:40]:
         file_path = os.path.join(folder_path, filename)
         if os.path.isfile(file_path):
             try:
@@ -96,6 +103,19 @@ class GoodTuringModel(NGramModel):
         super().__init__(ngram_counts, vocabulary, n)
         self.max_count = max_count
         self.count_of_counts = self._calculate_count_of_counts()
+        self.total_ngrams = sum(ngram_counts[n].values())
+
+        self.vocab_size = len(vocabulary) - 2  # remove <s>, </s>
+        self.possible_ngrams = self.vocab_size ** n
+        self.Nb = len(ngram_counts[n])
+        self.N0 = max(self.possible_ngrams - self.Nb, 1)
+
+        self.adjusted_counts = {}
+        for c in range(0, max_count + 2):
+            Nc = self.count_of_counts.get(c, 0)
+            Nc1 = self.count_of_counts.get(c + 1, 0)
+            if Nc > 0:
+                self.adjusted_counts[c] = (c + 1) * Nc1 / Nc
 
     def _calculate_count_of_counts(self):
         count_of_counts = defaultdict(int)
@@ -105,31 +125,17 @@ class GoodTuringModel(NGramModel):
         return count_of_counts
 
     def _good_turing_estimate(self, count):
-        if count == 0:
-            # Zero count smoothing
-            if 1 in self.count_of_counts and self.count_of_counts[1] > 0:
-                total = sum(self.ngram_counts[self.n].values())
-                return self.count_of_counts[1] / total if total else 1e-10
-            return 1e-10
-
-        if count > self.max_count or count + 1 not in self.count_of_counts or self.count_of_counts[count] == 0:
-            total = sum(self.ngram_counts[self.n].values())
-            return count / total if total else 1e-10
-
-        # Good-Turing formula: c* = (c+1) * N_{c+1} / N_c
-        return (count + 1) * self.count_of_counts[count + 1] / self.count_of_counts[count]
+        if count in self.adjusted_counts:
+            return self.adjusted_counts[count] / self.total_ngrams
+        elif count == 0:
+            return self.adjusted_counts.get(0, 1e-10) / self.N0
+        else:
+            return count / self.total_ngrams
 
     def probability(self, token, context):
         ngram = context + (token,)
         count = self.ngram_counts[self.n].get(ngram, 0)
-        context_count = self.ngram_counts[self.n - 1].get(context, 0) if self.n > 1 else sum(
-            self.ngram_counts[1].values())
-
-        if context_count == 0:
-            return 1 / len(self.vocabulary) if self.vocabulary else 1e-10
-
-        gt_estimate = self._good_turing_estimate(count)
-        return gt_estimate / context_count
+        return self._good_turing_estimate(count)
 
 
 class KneserNeyModel(NGramModel):
@@ -180,7 +186,6 @@ class KneserNeyModel(NGramModel):
 
 
 def predict_next_token(model, text, top_k=5):
-    """Predict the most likely next tokens given the input text"""
     tokens = tokenize_text(text)
 
     # Get the appropriate context length based on model's n-gram size
@@ -198,85 +203,79 @@ def predict_next_token(model, text, top_k=5):
             word_probs[word] = model.probability(word, context)
 
     # Return top k predictions
+    total_prob = sum(word_probs.values())
+    print("Total probability:", total_prob)
+    if total_prob > 0:
+        word_probs = {w: p / total_prob for w, p in word_probs.items()}
     top_predictions = sorted(word_probs.items(), key=lambda x: x[1], reverse=True)[:top_k]
     return top_predictions
 
 
 if __name__ == "__main__":
-    corpus_folder = "korpus"
-    if not os.path.exists(corpus_folder):
-        print(f"Error: Folder '{corpus_folder}' not found!")
-        exit(1)
+    parser = argparse.ArgumentParser(description='N-gram language model CLI')
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
-    # Process corpus once
-    print("Processing corpus...")
-    all_tokens = process_corpus(corpus_folder)
-    if not all_tokens:
-        print("No content found in corpus!")
-        exit(1)
+    # Train command
+    train_parser = subparsers.add_parser('train', help='Train and save a model')
+    train_parser.add_argument('--corpus', required=True, help='Path to corpus folder')
+    train_parser.add_argument('--model', required=True, help='Model type: gt or kn')
+    train_parser.add_argument('--n', type=int, default=3, help='N-gram size')
+    train_parser.add_argument('--output', required=True, help='Path to save model')
 
-    # Build n-gram counts up to trigrams
-    max_n = 3
-    ngram_counts, vocabulary = build_ngram_counts(all_tokens, max_n)
+    # Generate command
+    gen_parser = subparsers.add_parser('generate', help='Load model and generate next token')
+    gen_parser.add_argument('--model', required=True, help='Path to saved model')
 
-    # Create models
-    print("\nCreating models...")
-    models = {
-        # "Bigram GT": GoodTuringModel(ngram_counts, vocabulary, 2),
-        # "Trigram GT": GoodTuringModel(ngram_counts, vocabulary, 3),
-        # "Bigram KN": KneserNeyModel(ngram_counts, vocabulary, 2),
-        "Trigram KN": KneserNeyModel(ngram_counts, vocabulary, 3)
-    }
+    # Perplexity command
+    perp_parser = subparsers.add_parser('perplexity', help='Test perplexity of a saved model')
+    perp_parser.add_argument('--model', required=True, help='Path to saved model')
+    perp_parser.add_argument('--text', required=True, help='Path to text file for testing')
 
-    sample_text = ""
-    # Get sample text for perplexity
-    try:
-        sample_files = os.listdir(corpus_folder)
-        if not sample_files:
-            print("No files found in corpus folder!")
-            exit(1)
+    args = parser.parse_args()
 
-        sample_file = os.path.join(corpus_folder, random.choice(sample_files))
-        with open(sample_file, 'r', encoding='utf-8') as f:
-            sample_text = f.read()
-    except Exception as e:
-        print(f"Error reading sample file: {e}")
-        sample_text = ""
-
-    # Save models and calculate perplexity
-    for name, model in models.items():
-        model.save(f"{name.lower().replace(' ', '_')}.model")
-
-        if sample_text:
-            perplexity = calculate_perplexity(model, sample_text, model.n)
-            print(f"{name} perplexity: {perplexity:.2f}")
-
-    # Test loading
-    if os.path.exists("trigram_kn.model"):
-        print("\nTesting model loading...")
-        loaded_model = KneserNeyModel.load("trigram_kn.model")
-        if sample_text:
-            perplexity = calculate_perplexity(loaded_model, sample_text, loaded_model.n)
-            print(f"Loaded model perplexity: {perplexity:.2f}")
-
-    print("\nNext token prediction demo:")
-    selected_model = models["Trigram KN"]
-    text = ""
-    while True:
-        user_input = input("\nEnter text (or 'q' to quit | 'r' to reset ): ")
-        if user_input.lower() == "q":
-            break
-
-        if user_input.lower() == "r":
-            text = ""
-            continue
-
-        if not text:
-            text = user_input
+    if args.command == 'train':
+        all_tokens = process_corpus(args.corpus)
+        ngram_counts, vocabulary = build_ngram_counts(all_tokens, args.n)
+        if args.model == 'gt':
+            model = GoodTuringModel(ngram_counts, vocabulary, args.n)
+        elif args.model == 'kn':
+            model = KneserNeyModel(ngram_counts, vocabulary, args.n)
         else:
-            text += " " + user_input
-        predictions = predict_next_token(selected_model, text)
-        print(f"\nInput text: '{text}'")
-        print(f"\nTop 5 predicted next words:")
-        for i, (word, prob) in enumerate(predictions, 1):
-            print(f"{i}. '{word}' (probability: {prob:.6f})")
+            print("Unknown model type. Use 'gt' or 'kn'.")
+            exit(1)
+        model.save(args.output)
+        print(f"Model saved to {args.output}")
+
+    elif args.command == 'generate':
+        model = NGramModel.load(args.model)
+        print("Enter text (or 'q' to quit):")
+        text = ""
+        while True:
+            user_input = input("\nEnter text (or 'q' to quit | 'r' to reset )> ")
+
+            if user_input.lower() == "q":
+                break
+            if user_input.lower() == "r":
+                text = ""
+                continue
+            text = user_input if not text else text + " " + user_input
+            print(f"\nInput text: '{text}'")
+            tokens = text.split()
+            context = tuple(tokens[-(model.n - 1) - 1:-1]) if len(tokens) >= model.n else tuple(
+                tokens[:-1])
+            token = tokens[-1] if tokens else ""
+            print(f"Probability for {list(context) + [token]}: {model.probability(token, context)}")
+            predictions = predict_next_token(model, text)
+            print("Top 5 predictions:")
+            for i, (word, prob) in enumerate(predictions, 1):
+                print(f"{i}. '{word}' (probability: {prob:.6f})")
+
+    elif args.command == 'perplexity':
+        model = NGramModel.load(args.model)
+        with open(args.text, 'r', encoding='utf-8') as f:
+            test_text = f.read()
+        perp = calculate_perplexity(model, test_text, model.n)
+        print(f"Perplexity: {perp:.2f}")
+
+    else:
+        parser.print_help()
