@@ -126,14 +126,8 @@ class GoodTuringModel(NGramModel):
     def probability(self, token, context):
         ngram = context + (token,)
         count = self.ngram_counts[self.n].get(ngram, 0)
-        context_count = self.ngram_counts[self.n - 1].get(context, 0) if self.n > 1 else sum(
-            self.ngram_counts[1].values())
 
-        if context_count == 0:
-            return 1 / len(self.vocabulary) if self.vocabulary else 1e-10
-
-        gt_estimate = self._good_turing_estimate(count)
-        return gt_estimate / context_count
+        return self._good_turing_estimate(count)
 
 
 class KneserNeyModel(NGramModel):
@@ -213,20 +207,20 @@ if __name__ == "__main__":
 
     # Process corpus once
     print("Processing corpus...")
-    # all_tokens = process_corpus(corpus_folder)
-    # if not all_tokens:
-    #     print("No content found in corpus!")
-    #     exit(1)
+    all_tokens = process_corpus(corpus_folder)
+    if not all_tokens:
+        print("No content found in corpus!")
+        exit(1)
 
     # Build n-gram counts up to trigrams
     max_n = 3
-    # ngram_counts, vocabulary = build_ngram_counts(all_tokens, max_n)
+    ngram_counts, vocabulary = build_ngram_counts(all_tokens, max_n)
 
     # Create models
     print("\nCreating models...")
     models = {
         # "Bigram GT": GoodTuringModel(ngram_counts, vocabulary, 2),
-        # "Trigram GT": GoodTuringModel(ngram_counts, vocabulary, 3),
+        "Trigram GT": GoodTuringModel(ngram_counts, vocabulary, 3),
         # "Bigram KN": KneserNeyModel(ngram_counts, vocabulary, 2),
         # "Trigram KN": KneserNeyModel(ngram_counts, vocabulary, 3)
     }
@@ -255,12 +249,12 @@ if __name__ == "__main__":
             print(f"{name} perplexity: {perplexity:.2f}")
 
     # Test loading
-    if os.path.exists("trigram_kn.model"):
+    if os.path.exists("trigram_gt.model"):
         print("\nTesting model loading...")
-        loaded_model = KneserNeyModel.load("trigram_kn.model")
-        # if sample_text:
-        #     perplexity = calculate_perplexity(loaded_model, sample_text, loaded_model.n)
-        #     print(f"Loaded model perplexity: {perplexity:.2f}")
+        loaded_model = KneserNeyModel.load("trigram_gt.model")
+        if sample_text:
+            perplexity = calculate_perplexity(loaded_model, sample_text, loaded_model.n)
+            print(f"Loaded model perplexity: {perplexity:.2f}")
 
     print("\nNext token prediction demo:")
     # selected_model = models["Trigram KN"]
