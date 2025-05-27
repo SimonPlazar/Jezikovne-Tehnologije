@@ -7,6 +7,7 @@ from nltk.tokenize import word_tokenize
 from nltk.util import ngrams
 import re
 
+
 def tokenize_text(text):
     # return [token.lower() for token in word_tokenize(text)]
     return [
@@ -14,6 +15,7 @@ def tokenize_text(text):
         for token in word_tokenize(text)
         if re.fullmatch(r"[^\W\d_]+", token.lower())
     ]
+
 
 def get_ngrams_from_tokens(tokens, n):
     return list(ngrams(tokens, n, pad_left=True, pad_right=True, left_pad_symbol="<s>", right_pad_symbol="</s>"))
@@ -100,6 +102,19 @@ class GoodTuringModel(NGramModel):
         super().__init__(ngram_counts, vocabulary, n)
         self.max_count = max_count
         self.count_of_counts = self._calculate_count_of_counts()
+        self.total_ngrams = sum(ngram_counts[n].values())
+
+        self.vocab_size = len(vocabulary) - 2  # remove <s>, </s>
+        self.possible_ngrams = self.vocab_size ** n
+        self.Nb = len(ngram_counts[n])
+        self.N0 = max(self.possible_ngrams - self.Nb, 1)
+
+        self.adjusted_counts = {}
+        for c in range(0, max_count + 2):
+            Nc = self.count_of_counts.get(c, 0)
+            Nc1 = self.count_of_counts.get(c + 1, 0)
+            if Nc > 0:
+                self.adjusted_counts[c] = (c + 1) * Nc1 / Nc
 
     def _calculate_count_of_counts(self):
         count_of_counts = defaultdict(int)
@@ -109,24 +124,16 @@ class GoodTuringModel(NGramModel):
         return count_of_counts
 
     def _good_turing_estimate(self, count):
-        if count == 0:
-            # Zero count smoothing
-            if 1 in self.count_of_counts and self.count_of_counts[1] > 0:
-                total = sum(self.ngram_counts[self.n].values())
-                return self.count_of_counts[1] / total if total else 1e-10
-            return 1e-10
-
-        if count > self.max_count or count + 1 not in self.count_of_counts or self.count_of_counts[count] == 0:
-            total = sum(self.ngram_counts[self.n].values())
-            return count / total if total else 1e-10
-
-        # Good-Turing formula: c* = (c+1) * N_{c+1} / N_c
-        return (count + 1) * self.count_of_counts[count + 1] / self.count_of_counts[count]
+        if count in self.adjusted_counts:
+            return self.adjusted_counts[count] / self.total_ngrams
+        elif count == 0:
+            return self.adjusted_counts.get(0, 1e-10) / self.N0
+        else:
+            return count / self.total_ngrams
 
     def probability(self, token, context):
         ngram = context + (token,)
         count = self.ngram_counts[self.n].get(ngram, 0)
-
         return self._good_turing_estimate(count)
 
 
@@ -195,6 +202,10 @@ def predict_next_token(model, text, top_k=5):
             word_probs[word] = model.probability(word, context)
 
     # Return top k predictions
+    total_prob = sum(word_probs.values())
+    print("Total probability:", total_prob)
+    if total_prob > 0:
+        word_probs = {w: p / total_prob for w, p in word_probs.items()}
     top_predictions = sorted(word_probs.items(), key=lambda x: x[1], reverse=True)[:top_k]
     return top_predictions
 
@@ -275,7 +286,8 @@ if __name__ == "__main__":
             text += " " + user_input
         print(f"\nInput text: '{text}'")
         tokens = text.split()
-        context = tuple(tokens[-(selected_model.n - 1) - 1:-1]) if len(tokens) >= selected_model.n else tuple(tokens[:-1])
+        context = tuple(tokens[-(selected_model.n - 1) - 1:-1]) if len(tokens) >= selected_model.n else tuple(
+            tokens[:-1])
         token = tokens[-1] if tokens else ""
         print(f"Probability for {list(context) + [token]}: {selected_model.probability(token, context)}")
         predictions = predict_next_token(selected_model, text)
