@@ -5,11 +5,15 @@ import random
 from collections import Counter, defaultdict
 from nltk.tokenize import word_tokenize
 from nltk.util import ngrams
-
+import re
 
 def tokenize_text(text):
-    return [token.lower() for token in word_tokenize(text)]
-
+    # return [token.lower() for token in word_tokenize(text)]
+    return [
+        token.lower()
+        for token in word_tokenize(text)
+        if re.fullmatch(r"[^\W\d_]+", token.lower())
+    ]
 
 def get_ngrams_from_tokens(tokens, n):
     return list(ngrams(tokens, n, pad_left=True, pad_right=True, left_pad_symbol="<s>", right_pad_symbol="</s>"))
@@ -23,7 +27,7 @@ def process_corpus(folder_path):
     all_tokens = []
     file_count = 0
 
-    for filename in os.listdir(folder_path)[:20]:
+    for filename in os.listdir(folder_path)[:40]:
         file_path = os.path.join(folder_path, filename)
         if os.path.isfile(file_path):
             try:
@@ -180,7 +184,6 @@ class KneserNeyModel(NGramModel):
 
 
 def predict_next_token(model, text, top_k=5):
-    """Predict the most likely next tokens given the input text"""
     tokens = tokenize_text(text)
 
     # Get the appropriate context length based on model's n-gram size
@@ -210,14 +213,14 @@ if __name__ == "__main__":
 
     # Process corpus once
     print("Processing corpus...")
-    all_tokens = process_corpus(corpus_folder)
-    if not all_tokens:
-        print("No content found in corpus!")
-        exit(1)
+    # all_tokens = process_corpus(corpus_folder)
+    # if not all_tokens:
+    #     print("No content found in corpus!")
+    #     exit(1)
 
     # Build n-gram counts up to trigrams
     max_n = 3
-    ngram_counts, vocabulary = build_ngram_counts(all_tokens, max_n)
+    # ngram_counts, vocabulary = build_ngram_counts(all_tokens, max_n)
 
     # Create models
     print("\nCreating models...")
@@ -225,7 +228,7 @@ if __name__ == "__main__":
         # "Bigram GT": GoodTuringModel(ngram_counts, vocabulary, 2),
         # "Trigram GT": GoodTuringModel(ngram_counts, vocabulary, 3),
         # "Bigram KN": KneserNeyModel(ngram_counts, vocabulary, 2),
-        "Trigram KN": KneserNeyModel(ngram_counts, vocabulary, 3)
+        # "Trigram KN": KneserNeyModel(ngram_counts, vocabulary, 3)
     }
 
     sample_text = ""
@@ -255,12 +258,13 @@ if __name__ == "__main__":
     if os.path.exists("trigram_kn.model"):
         print("\nTesting model loading...")
         loaded_model = KneserNeyModel.load("trigram_kn.model")
-        if sample_text:
-            perplexity = calculate_perplexity(loaded_model, sample_text, loaded_model.n)
-            print(f"Loaded model perplexity: {perplexity:.2f}")
+        # if sample_text:
+        #     perplexity = calculate_perplexity(loaded_model, sample_text, loaded_model.n)
+        #     print(f"Loaded model perplexity: {perplexity:.2f}")
 
     print("\nNext token prediction demo:")
-    selected_model = models["Trigram KN"]
+    # selected_model = models["Trigram KN"]
+    selected_model = loaded_model
     text = ""
     while True:
         user_input = input("\nEnter text (or 'q' to quit | 'r' to reset ): ")
@@ -275,8 +279,12 @@ if __name__ == "__main__":
             text = user_input
         else:
             text += " " + user_input
-        predictions = predict_next_token(selected_model, text)
         print(f"\nInput text: '{text}'")
-        print(f"\nTop 5 predicted next words:")
+        tokens = text.split()
+        context = tuple(tokens[-(selected_model.n - 1) - 1:-1]) if len(tokens) >= selected_model.n else tuple(tokens[:-1])
+        token = tokens[-1] if tokens else ""
+        print(f"Probability for {list(context) + [token]}: {selected_model.probability(token, context)}")
+        predictions = predict_next_token(selected_model, text)
+        print(f"Top 5 predicted next words:")
         for i, (word, prob) in enumerate(predictions, 1):
             print(f"{i}. '{word}' (probability: {prob:.6f})")
